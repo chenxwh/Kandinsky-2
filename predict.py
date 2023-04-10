@@ -30,16 +30,31 @@ class Predictor(BasePredictor):
         ),
         prior_cf_scale: int = Input(default=4),
         prior_steps: str = Input(default="5"),
+        width: int = Input(
+            description="Choose width",
+            default=512,
+            choices=[256, 288, 432, 512, 576, 768, 1024]
+        ),
+        height: int = Input(
+            description="Choose height",
+            default=512,
+            choices=[256, 288, 432, 512, 576, 768, 1024]
+        ),
+        batch_size: int = Input(
+            description="Choose batch size",
+            default=1,
+            choices=[1, 2, 3, 4]
+        ),
     ) -> Path:
         out = "/tmp/out.png"
 
         images = self.model.generate_text2img(
             prompt,
             num_steps=num_inference_steps,
-            batch_size=1,
+            batch_size=batch_size,
             guidance_scale=guidance_scale,
-            h=768,
-            w=768,
+            h=height,
+            w=width,
             sampler=scheduler,
             prior_cf_scale=prior_cf_scale,
             prior_steps=prior_steps,
