@@ -30,6 +30,16 @@ class Predictor(BasePredictor):
         ),
         prior_cf_scale: int = Input(default=4),
         prior_steps: str = Input(default="5"),
+        width: int = Input(
+            description="Choose width",
+            default=512,
+            choices=[256, 288, 432, 512, 576, 768, 1024]
+        ),
+        height: int = Input(
+            description="Choose height",
+            default=512,
+            choices=[256, 288, 432, 512, 576, 768, 1024]
+        ),
     ) -> Path:
         out = "/tmp/out.png"
 
@@ -38,8 +48,8 @@ class Predictor(BasePredictor):
             num_steps=num_inference_steps,
             batch_size=1,
             guidance_scale=guidance_scale,
-            h=768,
-            w=768,
+            h=height,
+            w=width,
             sampler=scheduler,
             prior_cf_scale=prior_cf_scale,
             prior_steps=prior_steps,
