@@ -32,13 +32,13 @@ class Predictor(BasePredictor):
         prior_steps: str = Input(default="5"),
         width: int = Input(
             description="Choose width",
-            default="512",
-            choices=["256", "288", "432", "512", "576", "768", "1024"]
+            default=512,
+            choices=[256, 288, 432, 512, 576, 768, 1024]
         ),
         height: int = Input(
             description="Choose height",
-            default="512",
-            choices=["256", "288", "432", "512", "576", "768", "1024"]
+            default=512,
+            choices=[256, 288, 432, 512, 576, 768, 1024]
         ),
     ) -> Path:
         out = "/tmp/out.png"
