@@ -3,64 +3,60 @@
 
 import os
 from typing import List
-from diffusers import KandinskyV22Pipeline, KandinskyV22PriorPipeline
+import numpy as np
 import torch
-from transformers import CLIPVisionModelWithProjection
-from diffusers.models import UNet2DConditionModel
+from transformers import pipeline
+from diffusers.utils import load_image
+from diffusers import (
+    KandinskyV22PriorPipeline,
+    KandinskyV22ControlnetPipeline,
+    KandinskyV22PriorEmb2EmbPipeline,
+    KandinskyV22ControlnetImg2ImgPipeline,
+)
 
 from cog import BasePredictor, Input, Path
-
-
-MODEL_CACHE = "weights_cache"
 
 
 class Predictor(BasePredictor):
     def setup(self) -> None:
         """Load the model into memory to make running multiple predictions efficient"""
-        device = torch.device("cuda:0")
-
-        self.negative_prior_prompt = "lowres, text, error, cropped, worst quality, low quality, jpeg artifacts, ugly, duplicate, morbid, mutilated, out of frame, extra fingers, mutated hands, poorly drawn hands, poorly drawn face, mutation, deformed, blurry, dehydrated, bad anatomy, bad proportions, extra limbs, cloned face, disfigured, gross proportions, malformed limbs, missing arms, missing legs, extra arms, extra legs, fused fingers, too many fingers, long neck, username, watermark, signature"
-
-        image_encoder = (
-            CLIPVisionModelWithProjection.from_pretrained(
-                "kandinsky-community/kandinsky-2-2-prior",
-                subfolder="image_encoder",
-                cache_dir=MODEL_CACHE,
-            )
-            .half()
-            .to(device)
-        )
-        unet = (
-            UNet2DConditionModel.from_pretrained(
-                "kandinsky-community/kandinsky-2-2-decoder",
-                subfolder="unet",
-                cache_dir=MODEL_CACHE,
-            )
-            .half()
-            .to(device)
-        )
-        self.prior = KandinskyV22PriorPipeline.from_pretrained(
+        self.depth_estimator = pipeline("depth-estimation")
+        self.pipe_prior = KandinskyV22PriorPipeline.from_pretrained(
             "kandinsky-community/kandinsky-2-2-prior",
-            image_encoder=image_encoder,
             torch_dtype=torch.float16,
-            cache_dir=MODEL_CACHE,
-        ).to(device)
-        self.decoder = KandinskyV22Pipeline.from_pretrained(
-            "kandinsky-community/kandinsky-2-2-decoder",
-            unet=unet,
+            cache_dir="weights_cache_t2i",
+        ).to("cuda")
+        self.pipe = KandinskyV22ControlnetPipeline.from_pretrained(
+            "kandinsky-community/kandinsky-2-2-controlnet-depth",
             torch_dtype=torch.float16,
-            cache_dir=MODEL_CACHE,
-        ).to(device)
+            cache_dir="weights_cache_t2i",
+        ).to("cuda")
+        self.pipe_prior_img2img = KandinskyV22PriorEmb2EmbPipeline.from_pretrained(
+            "kandinsky-community/kandinsky-2-2-prior",
+            torch_dtype=torch.float16,
+            cache_dir="weights_cache_i2i",
+        ).to("cuda")
+        self.pipe_img2img = KandinskyV22ControlnetImg2ImgPipeline.from_pretrained(
+            "kandinsky-community/kandinsky-2-2-controlnet-depth",
+            torch_dtype=torch.float16,
+            cache_dir="weights_cache_i2i",
+        ).to("cuda")
 
     def predict(
         self,
+        image: Path = Input(description="Input image", default=None),
         prompt: str = Input(
             description="Input prompt",
-            default="A moss covered astronaut with a black background",
+            default="A robot, 4k photo",
         ),
         negative_prompt: str = Input(
             description="Specify things to not see in the output",
-            default=None,
+            default="lowres, text, error, cropped, worst quality, low quality, jpeg artifacts, ugly, duplicate, morbid, mutilated, out of frame, extra fingers, mutated hands, poorly drawn hands, poorly drawn face, mutation, deformed, blurry, dehydrated, bad anatomy, bad proportions, extra limbs, cloned face, disfigured, gross proportions, malformed limbs, missing arms, missing legs, extra arms, extra legs, fused fingers, too many fingers, long neck, username, watermark, signature",
+        ),
+        task: str = Input(
+            default="img2img",
+            choices=["text2img", "img2img"],
+            description="Choose a task",
         ),
         width: int = Input(
             description="Width of output image. Lower the setting if hits memory limits.",
@@ -79,7 +75,7 @@ class Predictor(BasePredictor):
                 1792,
                 2048,
             ],
-            default=512,
+            default=768,
         ),
         height: int = Input(
             description="Height of output image. Lower the setting if hits memory limits.",
@@ -98,13 +94,10 @@ class Predictor(BasePredictor):
                 1792,
                 2048,
             ],
-            default=512,
+            default=768,
         ),
         num_inference_steps: int = Input(
             description="Number of denoising steps", ge=1, le=500, default=75
-        ),
-        num_inference_steps_prior: int = Input(
-            description="Number of denoising steps for priors", ge=1, le=500, default=25
         ),
         num_outputs: int = Input(
             description="Number of images to output.",
@@ -120,36 +113,61 @@ class Predictor(BasePredictor):
         if seed is None:
             seed = int.from_bytes(os.urandom(2), "big")
         print(f"Using seed: {seed}")
-        torch.manual_seed(seed)
+        generator = torch.Generator(device="cuda").manual_seed(seed)
 
-        if negative_prompt is not None:
-            negative_prior_prompt = negative_prompt + self.negative_prior_prompt
+        img = load_image(str(image)).resize((width, height))
+
+        hint = make_hint(img, self.depth_estimator).unsqueeze(0).half().to("cuda")
+
+        if task == "img2img":
+            img_emb = self.pipe_prior_img2img(
+                prompt=prompt, image=img, strength=0.85, generator=generator
+            )
+            negative_emb = self.pipe_prior_img2img(
+                prompt=negative_prompt, image=img, strength=1, generator=generator
+            )
+            images = self.pipe_img2img(
+                image=img,
+                strength=0.5,
+                image_embeds=img_emb.image_embeds,
+                negative_image_embeds=negative_emb.image_embeds,
+                hint=hint,
+                num_inference_steps=num_inference_steps,
+                generator=generator,
+                height=height,
+                width=width,
+            ).images
+
         else:
-            negative_prior_prompt = self.negative_prior_prompt
+            image_emb, zero_image_emb = self.pipe_prior(
+                prompt=prompt, negative_prompt=negative_prompt, generator=generator
+            ).to_tuple()
 
-        img_emb = self.prior(
-            prompt=prompt,
-            num_inference_steps=num_inference_steps_prior,
-            num_images_per_prompt=num_outputs,
-        )
-
-        negative_emb = self.prior(
-            prompt=negative_prior_prompt,
-            num_inference_steps=num_inference_steps_prior,
-            num_images_per_prompt=num_outputs,
-        )
-        output = self.decoder(
-            image_embeds=img_emb.image_embeds,
-            negative_image_embeds=negative_emb.image_embeds,
-            num_inference_steps=num_inference_steps,
-            height=height,
-            width=width,
-        )
+            images = self.pipe(
+                image_embeds=image_emb,
+                negative_image_embeds=zero_image_emb,
+                hint=hint,
+                num_inference_steps=num_inference_steps,
+                generator=generator,
+                height=height,
+                width=width,
+            ).images
 
         output_paths = []
-        for i, sample in enumerate(output.images):
+        for i, sample in enumerate(images):
             output_path = f"/tmp/out-{i}.png"
             sample.save(output_path)
             output_paths.append(Path(output_path))
 
         return output_paths
+
+
+# let's take an image and extract its depth map.
+def make_hint(image, depth_estimator):
+    image = depth_estimator(image)["depth"]
+    image = np.array(image)
+    image = image[:, :, None]
+    image = np.concatenate([image, image, image], axis=2)
+    detected_map = torch.from_numpy(image).float() / 255.0
+    hint = detected_map.permute(2, 0, 1)
+    return hint
