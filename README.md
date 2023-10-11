@@ -79,7 +79,7 @@ images = model.generate_text2img(
 </p>
 
 
-Kandinsky 2.1 inherits best practicies from Dall-E 2 and Latent diffusion, while introducing some new ideas.
+Kandinsky 2.1 inherits best practices from Dall-E 2 and Latent diffusion, while introducing some new ideas.
 
 As text and image encoder it uses CLIP model and diffusion image prior (mapping) between latent spaces of CLIP modalities. This approach increases the visual performance of the model and unveils new horizons in blending images and text-guided image manipulation.
 
